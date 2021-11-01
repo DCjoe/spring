@@ -16,17 +16,8 @@
 
 package org.springframework.context.annotation;
 
-import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-
 import org.springframework.beans.factory.BeanDefinitionStoreException;
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
 import org.springframework.beans.factory.annotation.AnnotatedGenericBeanDefinition;
@@ -35,13 +26,7 @@ import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinitionHolder;
 import org.springframework.beans.factory.groovy.GroovyBeanDefinitionReader;
 import org.springframework.beans.factory.parsing.SourceExtractor;
-import org.springframework.beans.factory.support.AbstractBeanDefinition;
-import org.springframework.beans.factory.support.AbstractBeanDefinitionReader;
-import org.springframework.beans.factory.support.BeanDefinitionReader;
-import org.springframework.beans.factory.support.BeanDefinitionRegistry;
-import org.springframework.beans.factory.support.BeanNameGenerator;
-import org.springframework.beans.factory.support.DefaultListableBeanFactory;
-import org.springframework.beans.factory.support.RootBeanDefinition;
+import org.springframework.beans.factory.support.*;
 import org.springframework.beans.factory.xml.XmlBeanDefinitionReader;
 import org.springframework.context.annotation.ConfigurationCondition.ConfigurationPhase;
 import org.springframework.core.SpringProperties;
@@ -56,6 +41,9 @@ import org.springframework.core.type.StandardMethodMetadata;
 import org.springframework.lang.NonNull;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
+
+import java.lang.reflect.Method;
+import java.util.*;
 
 /**
  * Reads a given fully-populated set of ConfigurationClass instances, registering bean
@@ -137,6 +125,7 @@ class ConfigurationClassBeanDefinitionReader {
 	private void loadBeanDefinitionsForConfigurationClass(
 			ConfigurationClass configClass, TrackedConditionEvaluator trackedConditionEvaluator) {
 
+		//这里就是看我们的configClass是否有跳过注册，一般不会
 		if (trackedConditionEvaluator.shouldSkip(configClass)) {
 			String beanName = configClass.getBeanName();
 			if (StringUtils.hasLength(beanName) && this.registry.containsBeanDefinition(beanName)) {
@@ -146,14 +135,25 @@ class ConfigurationClassBeanDefinitionReader {
 			return;
 		}
 
+		//这里完全就是为了处理@Import注解中的类，开始讲我们@import中配置的类返回的类注册为bd
+		//这里只包含普通的类，没有其他
 		if (configClass.isImported()) {
+			//下面这个方法非常简单，就是简简单单的把我们configClass中放入的@imprt读取的普通类
+			// （@import中配置的类种返回的类列表）注册为普通的BeanDefinition
+			//在这里生成的bean的名字就是类的全限定名
 			registerBeanDefinitionForImportedConfigurationClass(configClass);
 		}
+		//如果在你的bean中，你配置了@Bean的方法，这里将每个@Bean方法注册为一个BeanDefinition
+		//其中会设置@Bean的所有自定义设置属性参数和默认参数，默认参数比如默认销毁方法等
 		for (BeanMethod beanMethod : configClass.getBeanMethods()) {
 			loadBeanDefinitionsForBeanMethod(beanMethod);
 		}
 
+		//处理@ImportResource中的xml，一般@ImportResouce中是一个xml文件，xml文件中配置了一些bean
+		//就是将xml中配置的<bean />解析成BeanDefinition
 		loadBeanDefinitionsFromImportedResources(configClass.getImportedResources());
+		//这里就是执行了后置处理器的回调方法，这里执行完毕过后，我们定义了后置处理器BeanFactoryPostProcessor就已经调用完毕了
+		//getImportBeanDefinitionRegistrars这里的数据是在@Import类型为Registrar的时候添加的
 		loadBeanDefinitionsFromRegistrars(configClass.getImportBeanDefinitionRegistrars());
 	}
 

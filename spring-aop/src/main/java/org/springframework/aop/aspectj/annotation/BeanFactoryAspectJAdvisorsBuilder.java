@@ -16,19 +16,18 @@
 
 package org.springframework.aop.aspectj.annotation;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 import org.aspectj.lang.reflect.PerClauseKind;
-
 import org.springframework.aop.Advisor;
 import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.ListableBeanFactory;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Helper for retrieving @AspectJ beans from a BeanFactory and building
@@ -89,8 +88,15 @@ public class BeanFactoryAspectJAdvisorsBuilder {
 				if (aspectNames == null) {
 					List<Advisor> advisors = new ArrayList<>();
 					aspectNames = new ArrayList<>();
+					//利用BeanFactoryUtils根据类型从容器中拿到所有的beanName, 即所有Object类
 					String[] beanNames = BeanFactoryUtils.beanNamesForTypeIncludingAncestors(
 							this.beanFactory, Object.class, true, false);
+					//Spring遍历所有的bean, 如果这个bean被@Aspect注解标注了, 那么就会将其加入到aspectNames中, 在最后
+					//  可以看到, Spring会把所有被@Aspect标注的类的beanName缓存起来, 与此同时, Spring以beanName为参数
+					//  创建了一个MetadataAwareAspectInstanceFactory, 利用advisorFactory的getAdvisors方法对该bean
+					//  中的所有通知进行解析, 解析完成后将其放入到advisorsCache中, 最后将所有的通知返回
+
+					//在getAdvisors中, Spring会遍历该bean中的所有方法, 找到被通知注解(如@Before这样的)标注的方法, 将其封装成一个个的Advisor后返回
 					for (String beanName : beanNames) {
 						if (!isEligibleBean(beanName)) {
 							continue;

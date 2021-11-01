@@ -16,10 +16,6 @@
 
 package org.springframework.transaction.interceptor;
 
-import java.lang.reflect.Method;
-import java.util.Properties;
-import java.util.concurrent.ConcurrentMap;
-
 import io.vavr.control.Try;
 import kotlin.coroutines.Continuation;
 import kotlinx.coroutines.reactive.AwaitKt;
@@ -27,33 +23,25 @@ import kotlinx.coroutines.reactive.ReactiveFlowKt;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.reactivestreams.Publisher;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.BeanFactoryAnnotationUtils;
-import org.springframework.core.CoroutinesUtils;
-import org.springframework.core.KotlinDetector;
-import org.springframework.core.MethodParameter;
-import org.springframework.core.NamedThreadLocal;
-import org.springframework.core.ReactiveAdapter;
-import org.springframework.core.ReactiveAdapterRegistry;
+import org.springframework.core.*;
 import org.springframework.lang.Nullable;
-import org.springframework.transaction.NoTransactionException;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.ReactiveTransaction;
-import org.springframework.transaction.ReactiveTransactionManager;
-import org.springframework.transaction.TransactionManager;
-import org.springframework.transaction.TransactionStatus;
-import org.springframework.transaction.TransactionSystemException;
+import org.springframework.transaction.*;
 import org.springframework.transaction.reactive.TransactionContextManager;
 import org.springframework.transaction.support.CallbackPreferringPlatformTransactionManager;
 import org.springframework.util.Assert;
 import org.springframework.util.ClassUtils;
 import org.springframework.util.ConcurrentReferenceHashMap;
 import org.springframework.util.StringUtils;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.lang.reflect.Method;
+import java.util.Properties;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Base class for transactional aspects, such as the {@link TransactionInterceptor}
@@ -336,9 +324,24 @@ public abstract class TransactionAspectSupport implements BeanFactoryAware, Init
 	protected Object invokeWithinTransaction(Method method, @Nullable Class<?> targetClass,
 			final InvocationCallback invocation) throws Throwable {
 
+
 		// If the transaction attribute is null, the method is non-transactional.
+		//这里得到的TransactionAttributeSource 就是在代理配置类 通过这个代码advisor.setTransactionAttributeSource(transactionAttributeSource);
 		TransactionAttributeSource tas = getTransactionAttributeSource();
+		//添加进来的，具体的思路如下：
+		/**
+		 * 首先这里的TransactionAttributeSource在添加到本对象的时候是在ProxyTransactionManagementConfiguration这个配置类中通过
+		 * @Bean添加的BeanFactoryTransactionAttributeSourceAdvisor一个Advisor，这Advisor又设置了一个transactionAttributeSource
+		 * 而这个transactionAttributeSource是从容器中拿到的，是一个AnnotationTransactionAttributeSource
+		 * 然后TransactionAttributeSource又是AnnotationTransactionAttributeSource的子类，而AnnotationTransactionAttributeSource
+		 * 的父类AbstractFallbackTransactionAttributeSource，所以下面的代码getTransactionAttribute真正的调用地方是
+		 * AbstractFallbackTransactionAttributeSource中的getTransactionAttribute方法，结构理清楚了，那么我们来分析下在调用
+		 * getTransactionAttribute这个方法到底做了什么事儿？
+		 * 这里方法里面比较深，其实简单来说就是根据当前方法method去找是否有@Transaction注解，如果找到了，就封装成一个
+		 * TransactionAttribute对象返回
+		 */
 		final TransactionAttribute txAttr = (tas != null ? tas.getTransactionAttribute(method, targetClass) : null);
+		//获取一个事务管理器
 		final TransactionManager tm = determineTransactionManager(txAttr);
 
 		if (this.reactiveAdapterRegistry != null && tm instanceof ReactiveTransactionManager) {
@@ -374,25 +377,61 @@ public abstract class TransactionAspectSupport implements BeanFactoryAware, Init
 			return result;
 		}
 
+		/**
+		 * asPlatformTransactionManager方法就是判断从容器中获取的TransactionManager是否是
+		 * PlatformTransactionManager类型，如果是PlatformTransactionManager类型就强制转换
+		 * 成PlatformTransactionManager返回，否则就报错
+		 */
 		PlatformTransactionManager ptm = asPlatformTransactionManager(tm);
+		//这里得到的是拦截的方法的全限定名
 		final String joinpointIdentification = methodIdentification(method, targetClass, txAttr);
 
 		if (txAttr == null || !(ptm instanceof CallbackPreferringPlatformTransactionManager)) {
 			// Standard transaction demarcation with getTransaction and commit/rollback calls.
+			//事务开始的地方
+			/**
+			 * 这里简单说明下，createTransactionIfNecessary方法就是开启事物，spring根据事物的传播机制
+			 * 进行不同的处理，我这边简单列举下几个常用的特性
+			 * REQUIRED：整个事物中都是一个事物进行处理的，传播的特性是REQUIRED，那么共用一个事物，不会开启其他的事物
+			 * 处理完毕过后一起提交，就是所有的业务逻辑，包括在整个事物中调用了其他开启了事物的方法都是共用一个事物
+			 * 一次性提交，一次性回滚，传播特性决定了所有的业务处理都在一个事务中完成，我这里说的是所有的传播特性都是REQUIRED
+			 * REQUIRED_NEW：当传播特性是REQUIRED_NEW的情况下， 在同一个线程中的时候，那么先挂起当前事物，开启一个新的事物
+			 * 当当前事物处理完成过后，提交REQUIRED_NEW的事物，唤醒开启事物前的事物，继续执行原先的事物
+			 * NESTED：会在当前执行的事物中新增一个保存点，当前事物发现异常，会回滚到保存点的地方，在当前事物的前面的事务不回滚
+			 * 如果都执行没有出现异常，那么不会单独提交保存点的事务，而是一起提交
+			 * NEVER：如果在一个线程中，存在了一个已有的事务，而下一个事务是NEVER,那么抛异常
+			 * NOT_SUPPORT：抛弃spring的事务管理，不启用事务，使用数据库默认的自动提交机制，也就是这里使用的
+			 * 不是spring创建的连接了，而是使用mybatis创建的连接
+			 * 其他的默认就是REQUIRED，直接在当前事物中运行
+			 *
+			 * 当出现事物的传播机制过后，那么传播机制有作用的前提条件是所有的事物都在一个线程中执行的，比如说
+			 *在方法为test，传播机制为REQUIRED，那么在test中调用一个test2方法， 而test2方法的传播机制为REQUIRED_NEW
+			 * 如果在一个线程中，执行到test2的时候会将test的事务进行挂起，test2新建一个事务，当test2执行完成过后提交了当前
+			 * 事务，在唤起test的事务继续执行，test执行完成过后进行提交；这些都是在一个线程中执行的，如果在test方法中
+			 * 调用test2的时候是重新开启了一个线程，那么上面的说法就不起作用，而是一个新的事务，不会挂起test的事务
+			 * 就等于两个不相干的事务在运行而已
+			 *
+			 * 为什么这样说呢？因为spring的底层源码每当一个事物开始的时候，就使用的ThreadLocal存储了的事务的信息
+			 * 所以如果不在一个线程内就不起作用
+			 *
+			 */
 			TransactionInfo txInfo = createTransactionIfNecessary(ptm, txAttr, joinpointIdentification);
 
 			Object retVal;
 			try {
 				// This is an around advice: Invoke the next interceptor in the chain.
 				// This will normally result in a target object being invoked.
+				//调用业务逻辑,就是方法里面的代理逻辑的调用，比如sql，但是里面又可能又会开启一个新的事务
 				retVal = invocation.proceedWithInvocation();
 			}
 			catch (Throwable ex) {
 				// target invocation exception
+				//出现异常回滚事务
 				completeTransactionAfterThrowing(txInfo, ex);
 				throw ex;
 			}
 			finally {
+				//清除线程本地的缓存
 				cleanupTransactionInfo(txInfo);
 			}
 
@@ -403,7 +442,7 @@ public abstract class TransactionAspectSupport implements BeanFactoryAware, Init
 					retVal = VavrDelegate.evaluateTryFailure(retVal, txAttr, status);
 				}
 			}
-
+			//提交事务
 			commitTransactionAfterReturning(txInfo);
 			return retVal;
 		}

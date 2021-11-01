@@ -16,9 +16,6 @@
 
 package org.springframework.context.annotation;
 
-import java.lang.annotation.Annotation;
-import java.util.function.Supplier;
-
 import org.springframework.beans.factory.annotation.AnnotatedGenericBeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinitionCustomizer;
@@ -32,6 +29,9 @@ import org.springframework.core.env.EnvironmentCapable;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
+
+import java.lang.annotation.Annotation;
+import java.util.function.Supplier;
 
 /**
  * Convenient adapter for programmatic registration of bean classes.
@@ -85,6 +85,15 @@ public class AnnotatedBeanDefinitionReader {
 		Assert.notNull(environment, "Environment must not be null");
 		this.registry = registry;
 		this.conditionEvaluator = new ConditionEvaluator(registry, environment, null);
+		/**
+		 * 扫描spring 原生的后置处理器放入工厂的bd map中（bean工厂的beanDefinitionMap）
+		 * spring底层的bd都是RootBeanDefinition
+		 *     1.添加ConfigurationClassPostProcessor成一个BeanDefinition；
+		 *     2.添加AutowiredAnnotationBeanPostProcessor成一个BeanDefinition；
+		 *     3.添加CommonAnnotationBeanPostProcessor成一个BeanDefinition；
+		 *     4.添加EventListenerMethodProcessor成一个BeanDefinition；
+		 *     5.添加DefaultEventListenerFactory成一个BeanDefinition；
+		 */
 		AnnotationConfigUtils.registerAnnotationConfigProcessors(this.registry);
 	}
 
@@ -250,26 +259,40 @@ public class AnnotatedBeanDefinitionReader {
 			@Nullable Class<? extends Annotation>[] qualifiers, @Nullable Supplier<T> supplier,
 			@Nullable BeanDefinitionCustomizer[] customizers) {
 
+		/**
+		 * 将Bean配置类信息转成容器中AnnotatedGenericBeanDefinition数据结构, AnnotatedGenericBeanDefinition继承自BeanDefinition作用是定义一个bean的数据结构，
+		 * 下面的getMetadata可以获取到该bean上的注解信息
+		 * 下面的构造方法spring通过手段读取我们配置的配置类比如Appconfig这个类
+		 * 他会把这个类上的所有注解信息都读取到abd中
+		 */
 		AnnotatedGenericBeanDefinition abd = new AnnotatedGenericBeanDefinition(beanClass);
+		//@Conditional装配条件判断是否需要跳过注册
 		if (this.conditionEvaluator.shouldSkip(abd.getMetadata())) {
 			return;
 		}
-
+		//设置回调
 		abd.setInstanceSupplier(supplier);
+		//解析bean作用域(单例或者原型)，如果有@Scope注解，则解析@Scope，没有则默认为singleton
 		ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(abd);
+		//作用域写回BeanDefinition数据结构, abd中缺损的情况下为空，将默认值singleton重新赋值到abd
 		abd.setScope(scopeMetadata.getScopeName());
+		//生成bean配置类beanName
 		String beanName = (name != null ? name : this.beanNameGenerator.generateBeanName(abd, this.registry));
-
+		//通用注解解析到abd结构中，主要是处理Lazy, primary,DependsOn, Role ,Description这五个注解
 		AnnotationConfigUtils.processCommonDefinitionAnnotations(abd);
+		// @Qualifier特殊限定符处理,一般用这个注解的扫描类，是没有这些东西的，我猜其他子类的扫描器可能会有这些东西
 		if (qualifiers != null) {
 			for (Class<? extends Annotation> qualifier : qualifiers) {
 				if (Primary.class == qualifier) {
+					// 如果配置@Primary注解，则设置当前Bean为自动装配autowire时首选bean
 					abd.setPrimary(true);
 				}
 				else if (Lazy.class == qualifier) {
+					//设置当前bean为延迟加载
 					abd.setLazyInit(true);
 				}
 				else {
+					//其他注解，则添加到abd结构中
 					abd.addQualifier(new AutowireCandidateQualifier(qualifier));
 				}
 			}
@@ -279,7 +302,7 @@ public class AnnotatedBeanDefinitionReader {
 				customizer.customize(abd);
 			}
 		}
-
+		//根据beanName和bean定义信息封装一个beanHolder,beanHolder其实就是一个 beanName和BeanDefinition的封装
 		BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(abd, beanName);
 		definitionHolder = AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
 		BeanDefinitionReaderUtils.registerBeanDefinition(definitionHolder, this.registry);

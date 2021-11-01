@@ -1,13 +1,21 @@
 pluginManagement {
+//	repositories {
+//		gradlePluginPortal()
+//		maven { url 'https://repo.spring.io/plugins-release' }
+//	}
 	repositories {
 		gradlePluginPortal()
-		maven { url 'https://repo.spring.io/plugins-release' }
+		maven { url 'http://maven.aliyun.com/nexus/content/groups/public/' }
+		maven { url 'http://maven.aliyun.com/nexus/content/repositories/jcenter' }
+		maven { url 'http://maven.aliyun.com/nexus/content/repositories/google' }
+		maven { url 'http://maven.aliyun.com/nexus/content/repositories/gradle-plugin' }
+		maven { url "https://repo.spring.io/libs-spring-framework-build" }
 	}
 }
 
 plugins {
-	id "com.gradle.enterprise" version "3.6.1"
-	id "io.spring.ge.conventions" version "0.0.7"
+	id "com.gradle.enterprise" version "3.2"
+//	id "io.spring.gradle-enterprise-conventions" version "0.0.2"
 }
 
 include "spring-aop"
@@ -36,6 +44,7 @@ include "spring-webmvc"
 include "spring-websocket"
 include "framework-bom"
 include "integration-tests"
+include "spring-example"
 
 rootProject.name = "spring"
 rootProject.children.each {project ->
@@ -45,11 +54,11 @@ rootProject.children.each {project ->
 settings.gradle.projectsLoaded {
 	gradleEnterprise {
 		buildScan {
-			if (settings.gradle.rootProject.hasProperty('mainToolchain')) {
-				value("Main toolchain", 'JDK' + settings.gradle.rootProject.getProperty('mainToolchain'))
+			if (settings.gradle.rootProject.hasProperty('customJavaHome')) {
+				value("Custom JAVA_HOME", settings.gradle.rootProject.getProperty('customJavaHome'))
 			}
-			if (settings.gradle.rootProject.hasProperty('testToolchain')) {
-				value("Test toolchain", 'JDK' + settings.gradle.rootProject.getProperty('testToolchain'))
+			if (settings.gradle.rootProject.hasProperty('customJavaSourceVersion')) {
+				value("Custom Java Source Version", settings.gradle.rootProject.getProperty('customJavaSourceVersion'))
 			}
 			File buildDir = settings.gradle.rootProject.getBuildDir()
 			buildDir.mkdirs()
@@ -62,3 +71,5 @@ settings.gradle.projectsLoaded {
 		}
 	}
 }
+include 'spring-example'
+

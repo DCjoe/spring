@@ -16,30 +16,8 @@
 
 package org.springframework.context.annotation;
 
-import java.io.FileNotFoundException;
-import java.io.IOException;
-import java.lang.annotation.Annotation;
-import java.net.SocketException;
-import java.net.UnknownHostException;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.StringJoiner;
-import java.util.function.Predicate;
-
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.BeanDefinitionStoreException;
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
@@ -60,11 +38,8 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationAttributes;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.core.annotation.AnnotationUtils;
-import org.springframework.core.env.CompositePropertySource;
-import org.springframework.core.env.ConfigurableEnvironment;
-import org.springframework.core.env.Environment;
-import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
+import org.springframework.core.env.*;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.core.io.support.DefaultPropertySourceFactory;
@@ -79,12 +54,15 @@ import org.springframework.core.type.classreading.MetadataReaderFactory;
 import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Component;
-import org.springframework.util.Assert;
-import org.springframework.util.ClassUtils;
-import org.springframework.util.CollectionUtils;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
-import org.springframework.util.StringUtils;
+import org.springframework.util.*;
+
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.lang.annotation.Annotation;
+import java.net.SocketException;
+import java.net.UnknownHostException;
+import java.util.*;
+import java.util.function.Predicate;
 
 /**
  * Parses a {@link Configuration} class definition, populating a collection of
@@ -171,6 +149,12 @@ class ConfigurationClassParser {
 		for (BeanDefinitionHolder holder : configCandidates) {
 			BeanDefinition bd = holder.getBeanDefinition();
 			try {
+				/**
+				 * 和前面的逻辑一样，就是看你的BeanDefinition是否是一个注解的bd，如果不是，根据beanClass获取类上的所有注解信息
+				 * 生成元数据信息,然后进行处理;如通是一个注解的bd，那么直接将这个bd中的元数据信息在构建配置类信息对象的时候传入
+				 * 如果不是一个注解bd，在构建配置类信息对象的时候去获取这个类的元数据信息，最后调用parse进行处理
+				 * 所以我们直接看parse这个方法即可
+				 */
 				if (bd instanceof AnnotatedBeanDefinition) {
 					parse(((AnnotatedBeanDefinition) bd).getMetadata(), holder.getBeanName());
 				}
@@ -190,6 +174,8 @@ class ConfigurationClassParser {
 			}
 		}
 
+		//这里是处理@import的延迟加载的import类，和之前@import一样，不一样的地方在于它是延迟加载的，需要在所有的@import处理
+		//完毕过后才会来调用
 		this.deferredImportSelectorHandler.process();
 	}
 
@@ -222,6 +208,19 @@ class ConfigurationClassParser {
 	}
 
 
+	/**
+	 *这个方法的作用是处理配置类，内容非常多
+	 * ConfigurationClass:这个是我们的配置类构建的一个配置类信息类，它的里面包含的重要属性有：
+	 * importBy：表示被谁导入的
+	 * beanMethods：配置类中包含的@Bean方法列表
+	 * importedResources：配置类中@ImportResouce的资源列表；
+	 * importBeanDefinitionRegistrars：配置类包含的@Import是ImportBeanDefinitionRegistrar类型的注册器
+	 * 很多第三方框架，比如mybatis和spring整合的时候就采用了ImportBeanDefinitionRegistrar这个扩展点与spring整合
+	 * 在里面将Mybatis中的mapper接口生成代理对象，然后设置为bd，放入spring，让spring给它创建实例
+	 * @param configClass 我们的配置类
+	 * @param filter java8的lambda表达式的判断Predicate，这个条件判断的是否是我们的注解是否是spring的内置的注解
+	 * @throws IOException
+	 */
 	protected void processConfigurationClass(ConfigurationClass configClass, Predicate<String> filter) throws IOException {
 		if (this.conditionEvaluator.shouldSkip(configClass.getMetadata(), ConfigurationPhase.PARSE_CONFIGURATION)) {
 			return;
@@ -245,12 +244,23 @@ class ConfigurationClassParser {
 		}
 
 		// Recursively process the configuration class and its superclass hierarchy.
+		//asSourceClass这个方法就是内部处理先判断我们的注解类是否满足filter条件
+		//如果满足，则通过Class.forName创建，这里的Predicate条件是表示注解都是否是以javax.annotation或者spring的包开头的
 		SourceClass sourceClass = asSourceClass(configClass, filter);
+		/**
+		 * 这里进行循环处理，条件是每次返回的sourceClass不为空，，在doProcessConfigurationClass方法中
+		 * 每次处理完成过后，会获取这个类的父类，因为可能父类中存在注册信息，所以这里的循环其实就是以当前类为准备，一直进行扫描
+		 * 处理，直到把所有的父类都处理完成，才结束，如果说处理到没有父类的时候，那么doProcessConfigurationClass方法
+		 * 会返回一个空，就会跳出循环
+		 */
 		do {
 			sourceClass = doProcessConfigurationClass(configClass, sourceClass, filter);
 		}
 		while (sourceClass != null);
 
+		/**
+		 * 每个配置类扫描处理完成过后都加入到configurationClasses
+		 */
 		this.configurationClasses.put(configClass, configClass);
 	}
 
@@ -267,12 +277,36 @@ class ConfigurationClassParser {
 			ConfigurationClass configClass, SourceClass sourceClass, Predicate<String> filter)
 			throws IOException {
 
+		/**
+		 * 判断我们的注解是否实现了@Component,这个判断是什么意思呢？就是说如果你的配置类比如Appconfig中加了
+		 * @Component注解，那么要先看处理这个配置类的内部类，万一内部类定义了@Bean或者@CompoenScan注解
+		 * 所以这里先处理内部类，如果有内部类，先把内部类处理完成，如果内部类也有配置类，那么也会当成是一个配置类
+		 * 的候选者，内部类的配置类的候选者判断条件和配置类的候选条件判断一致
+		 */
 		if (configClass.getMetadata().isAnnotated(Component.class.getName())) {
 			// Recursively process any member (nested) classes first
+			//如果加了@Compenent，则优先处理内部类，这里是一个黑盒子，这里不做研究，就是处理内部类的操作
+			//说简单点，我们把Appconfig作为一个配置类提供给spring处理，但是如果我们的这个配置类里面还有内部类呢？？？
+			//最重要的是我们的这个内部类里面也包含了配置类或者组件类，比如加了@Compent之类的注解，那么spring需要优先处理
+			//spring怎么处理？？spring扫码到如果有符合条件的内部类，又把内部类放入一个set集合中，循环调用我们的processConfigurationClass，
 			processMemberClasses(configClass, sourceClass, filter);
 		}
 
 		// Process any @PropertySource annotations
+		/**
+		 * 内部类处理完成过后，开始处理 @PropertySource，这里的处理逻辑是怎么样的呢?
+		 * 首先我们要明白，程序执行到这里的时候在spring容器中有环境变量Environment，这个时候的环境变量是不包括@PropertySource
+		 * 导入的资源信息，仅仅是系统中和spring容器中以及jvm启动中的一些参数，所以如果你的配置类加了@PropertySource注解，
+		 * 那么这里要把@PropertySource读取出来，然后把key value加入到Environment，而我们的@PropertySource可以这样配置：
+		 * @PropertySource("classpath:xxx.properties")
+		 * @PropertySource("/home/xx/xxx/xxx.properties")
+		 * @PropertySource("${xxxx}")
+		 *所以spring要先获取到@PropertySource中的字符串，那么进行占位符处理，反正就是最后要得到一个路径，关于占位符的处理
+		 * 之前说过了，这里就不多说了
+		 */
+
+		// Process any @PropertySource annotations
+		//处理@PropertySources和@PropertySource,非常简单
 		for (AnnotationAttributes propertySource : AnnotationConfigUtils.attributesForRepeatable(
 				sourceClass.getMetadata(), PropertySources.class,
 				org.springframework.context.annotation.PropertySource.class)) {
@@ -286,20 +320,38 @@ class ConfigurationClassParser {
 		}
 
 		// Process any @ComponentScan annotations
+		// Process any @ComponentScan annotations
+		//下面是处理我们的@ComponentScan@ComponentScans，这才是最重要的，是spring容器中最终装入我们的bean的关键
+		//这里扫描到bdmap中过后，后续spring就通过这个map去实例化单例bean
+
+		/**
+		 * 下面的逻辑就是处理@ComponScann/ComponentScans的核心逻辑
+		 */
 		Set<AnnotationAttributes> componentScans = AnnotationConfigUtils.attributesForRepeatable(
 				sourceClass.getMetadata(), ComponentScans.class, ComponentScan.class);
 		if (!componentScans.isEmpty() &&
 				!this.conditionEvaluator.shouldSkip(sourceClass.getMetadata(), ConfigurationPhase.REGISTER_BEAN)) {
 			for (AnnotationAttributes componentScan : componentScans) {
 				// The config class is annotated with @ComponentScan -> perform the scan immediately
+				/**
+				 * 下面构建了一个扫描对象ComponentScanAnnotationParser，对每个@ComponScan中配置的路径，得到路径过后进行扫描
+				 * 主要处理了@Component注解，得到所有@Component注解所对应class成BeanDefinition，
+				 * 扫描是通过构建一个扫描对象ClassPathBeanDefinitionScanner去扫描的，而spring在启动的时候也构建了一个ClassPathBeanDefinitionScanner
+				 * 对象，为什么这边没有使用呢？因为spring启动的时候构建的扫描对象是用于程序员可以手动添加扫描的类去扫描的，而这里是配置类扫描
+				 * spring会为每一个配置类构建一个扫描对象来处理
+				 */
 				Set<BeanDefinitionHolder> scannedBeanDefinitions =
 						this.componentScanParser.parse(componentScan, sourceClass.getMetadata().getClassName());
 				// Check the set of scanned definitions for any further config classes and parse recursively if needed
 				for (BeanDefinitionHolder holder : scannedBeanDefinitions) {
+					//下面获取原始bd，如果原始bd为空，则将当前bd赋值给原始bd
 					BeanDefinition bdCand = holder.getBeanDefinition().getOriginatingBeanDefinition();
 					if (bdCand == null) {
 						bdCand = holder.getBeanDefinition();
 					}
+					//本次扫描出来的符合条件的BeanDefinition也就是@Component的BeanDefinition，它肯定也是一个配置类，下面又在判断是否是一个配置类
+					//如果是，又开始递归，因为如果你有@Component，那么你里面可能还有@Bean方法注解或者本身还具有@Import等注解信息，所以这里还需要进行递归
+					//调用 ，将所有的信息都找出来然后注册
 					if (ConfigurationClassUtils.checkConfigurationClassCandidate(bdCand, this.metadataReaderFactory)) {
 						parse(bdCand.getBeanClassName(), holder.getBeanName());
 					}
@@ -308,30 +360,51 @@ class ConfigurationClassParser {
 		}
 
 		// Process any @Import annotations
+		//处理@Import注解的相关操作,先通过getImmports得到所有的@Import类
+		//这里需要注意一点就是，如果我们定义了一个接口实现了ImportSelector，那么这个类如果只是加了@Component，那么
+		//spring只是把它当成了一个普通bd，不能自动调用起selectImports方法，所以没有办法将需要的对象转换成bd，
+		// 如果一个类实现了ImportSelector，那么必须通过注解
+		//@Import进入导入才行；以下的getImports是得到我们传入的类的所有加了@Import注解的集合？什么意思呢？
+		//就是我们的一个配置类，上面可以加很多注解，每个注解都 可以加@Import，所以getImports就是为了得到你加了几个@Import的类
 		processImports(configClass, sourceClass, getImports(sourceClass), filter, true);
 
 		// Process any @ImportResource annotations
+		/**
+		 * 下面的是处理@ImportResouce("classpath:spring.xml")，类似于这种，获取locations列表，然后循环去处理
+		 * 其中locations可以是通过占位符来实现，然后将占位符处理过后添加到ConfigClass中的importedResources的资源集合中
+		 */
 		AnnotationAttributes importResource =
 				AnnotationConfigUtils.attributesFor(sourceClass.getMetadata(), ImportResource.class);
 		if (importResource != null) {
 			String[] resources = importResource.getStringArray("locations");
 			Class<? extends BeanDefinitionReader> readerClass = importResource.getClass("reader");
 			for (String resource : resources) {
+				//占位符处理,占位符可以是@ImportResouce("${xxxx}")
 				String resolvedResource = this.environment.resolveRequiredPlaceholders(resource);
+				//将占位符处理过后，添加到集合中
 				configClass.addImportedResource(resolvedResource, readerClass);
 			}
 		}
 
 		// Process individual @Bean methods
+		//下面是判断是否在配置类如AppConfig中添加了@Bean方法的，如果是，将其添加到beanMethods集合中
 		Set<MethodMetadata> beanMethods = retrieveBeanMethodMetadata(sourceClass);
 		for (MethodMetadata methodMetadata : beanMethods) {
 			configClass.addBeanMethod(new BeanMethod(methodMetadata, configClass));
 		}
 
 		// Process default methods on interfaces
+		/**
+		 * 其实下面的processInterfaces接口处理，主要是处理java8中接口有默认实现的逻辑处理
+		 * 默认接口也可以使用@Bean来定义一个Bean
+		 */
 		processInterfaces(configClass, sourceClass);
 
 		// Process superclass, if any
+		/**
+		 * 程序执行到这里过后，当前的配置类已经处理完成了，这里获取它的父类，看是否有父类，如果有父类，返回父类，在do while循环中继续处理
+		 * 如果没有父类，当前配置类就扫描结束了
+		 */
 		if (sourceClass.getMetadata().hasSuperClass()) {
 			String superclass = sourceClass.getMetadata().getSuperClassName();
 			if (superclass != null && !superclass.startsWith("java") &&
@@ -348,6 +421,9 @@ class ConfigurationClassParser {
 
 	/**
 	 * Register member (nested) classes that happen to be configuration classes themselves.
+	 * 这里是处理内部类的，获取配置类中的所有内部类，然后判断是否是一个配置类的候选者，如果是配置类的候选者
+	 * 那么循环调用处理配置类的处理过程，将每个内部类进行处理，处理流程和主配置类的处理流程一样，也会调用到
+	 * processConfigurationClass这个方法里面，就是一个递归调用，如果内部类的条件是满足的，那么就会进行递归调用，直到内部类处理完成
 	 */
 	private void processMemberClasses(ConfigurationClass configClass, SourceClass sourceClass,
 			Predicate<String> filter) throws IOException {
@@ -356,6 +432,7 @@ class ConfigurationClassParser {
 		if (!memberClasses.isEmpty()) {
 			List<SourceClass> candidates = new ArrayList<>(memberClasses.size());
 			for (SourceClass memberClass : memberClasses) {
+				//循环获取内部类，然后判断是否是一个配置类的候选者，如果是，加入candidates
 				if (ConfigurationClassUtils.isConfigurationCandidate(memberClass.getMetadata()) &&
 						!memberClass.getMetadata().getClassName().equals(configClass.getMetadata().getClassName())) {
 					candidates.add(memberClass);
@@ -438,6 +515,8 @@ class ConfigurationClassParser {
 	 * Process the given <code>@PropertySource</code> annotation metadata.
 	 * @param propertySource metadata for the <code>@PropertySource</code> annotation found
 	 * @throws IOException if loading a property source failed
+	 * 这个方法是处理@PropertySource的逻辑，就是读取出来@PropertySource中的属性，然后得到资源路径列表，然后选好处理
+	 * 将资源文件中的key value读取出来加入到Environment中
 	 */
 	private void processPropertySource(AnnotationAttributes propertySource) throws IOException {
 		String name = propertySource.getString("name");
@@ -458,8 +537,10 @@ class ConfigurationClassParser {
 
 		for (String location : locations) {
 			try {
+				//这里是处理$占位符的，得到一个真实的路径
 				String resolvedLocation = this.environment.resolveRequiredPlaceholders(location);
 				Resource resource = this.resourceLoader.getResource(resolvedLocation);
+				//然后加入到环境变量中
 				addPropertySource(factory.createPropertySource(name, new EncodedResource(resource, encoding)));
 			}
 			catch (IllegalArgumentException | FileNotFoundException | UnknownHostException | SocketException ex) {
@@ -550,6 +631,19 @@ class ConfigurationClassParser {
 		}
 	}
 
+	/**
+	 * 处理所有的@Import注解
+	 * 这里是@Import的三种类型，分别是Import的普通类，ImportSelector，ImportBeanDefinitionRegistrar
+	 * 1.如果导入的是普通类，那么会递归去调用processConfigurationClass，将普通类注册成一个ConfigClass，它有一个属性为ImportBy，这个ImportBy就表示是谁将它导入的
+	 * 2.如果是ImportSelector，那么会调用它的selectImports返回一个列表，这个列表也是要被导入的类列表，类可能是普通类，可能是ImportSelector，也有可能是ImportBeanDefinitionRegistrar，
+	 * 如果是普通类，进入普通类的逻辑，如果还是ImportSelector，又递归，如果是ImportBeanDefinitionRegistrar，添加到ConfigClass中属性importBeanDefinitionRegistrars集合中
+	 * 3.如果是ImportBeanDefinitionRegistrar，就直接添加到ConfigClass中属性importBeanDefinitionRegistrars集合中；
+	 * @param configClass 配置类class
+	 * @param currentSourceClass
+	 * @param importCandidates  所有带了@Import注解的类集合
+	 * @param exclusionFilter
+	 * @param checkForCircularImports
+	 */
 	private void processImports(ConfigurationClass configClass, SourceClass currentSourceClass,
 			Collection<SourceClass> importCandidates, Predicate<String> exclusionFilter,
 			boolean checkForCircularImports) {
@@ -558,43 +652,66 @@ class ConfigurationClassParser {
 			return;
 		}
 
+		//importStack是Import的一个栈数据结构对象
 		if (checkForCircularImports && isChainedImportOnStack(configClass)) {
 			this.problemReporter.error(new CircularImportProblem(configClass, this.importStack));
 		}
 		else {
 			this.importStack.push(configClass);
 			try {
+				/**
+				 * 下面是对加了@Import的类（获取@Import配置的类）列表，进行处理，@Import分三种
+				 * 1.普通的bd（普通bd，根据spring的下面判断直接调用之前的方法processConfigurationClass进行初始化成一个bd放入bdmap)
+				 * 2.(实现了Import实现了ImportSelector的类，会调用selectImports，得到一个类名称列表，而根据类名称列表再次调用
+				 * processImports，循环判断返回的每个类是什么类型，也符合下面三种情况，如果是普通类，和1的步骤一样，如果还是ImportSelector，又
+				 * 递归调用，如果是实现了ImportBeanDefinitionRegistrar,那么在配置类对象中添加一个ImportBeanDefinitionRegistrar对象，以备后续指向性）
+				 * 3.实现了ImportBeanDefinitionRegistrar（直接把该对象添加到列表中后续执行其中的方法）
+				 */
 				for (SourceClass candidate : importCandidates) {
 					if (candidate.isAssignable(ImportSelector.class)) {
 						// Candidate class is an ImportSelector -> delegate to it to determine imports
+						//candidateClass就是@Import中配置的类
 						Class<?> candidateClass = candidate.loadClass();
+						//因为实现了ImportSelector接口，所以实现类也是ImportSelector类型
 						ImportSelector selector = ParserStrategyUtils.instantiateClass(candidateClass, ImportSelector.class,
 								this.environment, this.resourceLoader, this.registry);
 						Predicate<String> selectorFilter = selector.getExclusionFilter();
 						if (selectorFilter != null) {
 							exclusionFilter = exclusionFilter.or(selectorFilter);
 						}
+						//判断该Import类是否是延迟加载的ImportSelector,如果是延迟加载的ImportSelector，就添加到deferredImportSelectorHandler列表中
 						if (selector instanceof DeferredImportSelector) {
 							this.deferredImportSelectorHandler.handle(configClass, (DeferredImportSelector) selector);
 						}
 						else {
+							//否则调用实现了ImportSelector中的selectImports中返回的类列表又开始递归调用
+							//直到类是普通的类或者ImportBeanDefinitionRegistrar类才算结束
 							String[] importClassNames = selector.selectImports(currentSourceClass.getMetadata());
 							Collection<SourceClass> importSourceClasses = asSourceClasses(importClassNames, exclusionFilter);
+							//递归调用，递归调用的情况也有可能是这三种，反复递归
 							processImports(configClass, currentSourceClass, importSourceClasses, exclusionFilter, false);
 						}
 					}
 					else if (candidate.isAssignable(ImportBeanDefinitionRegistrar.class)) {
+						//是一个ImportBeanDefinitionRegistrar类，将其添加到importBeanDefinitionRegistrars列表中
 						// Candidate class is an ImportBeanDefinitionRegistrar ->
 						// delegate to it to register additional bean definitions
 						Class<?> candidateClass = candidate.loadClass();
 						ImportBeanDefinitionRegistrar registrar =
 								ParserStrategyUtils.instantiateClass(candidateClass, ImportBeanDefinitionRegistrar.class,
 										this.environment, this.resourceLoader, this.registry);
+						//如果是Registrar类型的，那么添加到待处理列表中，后续进行处理
 						configClass.addImportBeanDefinitionRegistrar(registrar, currentSourceClass.getMetadata());
 					}
 					else {
 						// Candidate class not an ImportSelector or ImportBeanDefinitionRegistrar ->
 						// process it as an @Configuration class
+						/**
+						 * @Import 有三种类型，这里是普通类的类型，就是一个普通类，就是将一个普通类注册为一个BeanDefinition
+						 * 如果是上面的ImportSelector的话，那么调用selectImports得到的注册列表如果是普通类型的类，那么还是会到这里
+						 * 将一个普通的类注册成为一个普通BeanDefinition，最后成为一个创建一个ConfigClass，而这里构造的时候
+						 * importBy就是AppConfig
+						 */
 						this.importStack.registerImport(
 								currentSourceClass.getMetadata(), candidate.getMetadata().getClassName());
 						processConfigurationClass(candidate.asConfigClass(configClass), exclusionFilter);

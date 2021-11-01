@@ -16,9 +16,6 @@
 
 package org.springframework.context.annotation;
 
-import java.util.Arrays;
-import java.util.function.Supplier;
-
 import org.springframework.beans.factory.config.BeanDefinitionCustomizer;
 import org.springframework.beans.factory.support.BeanNameGenerator;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
@@ -27,6 +24,9 @@ import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.metrics.StartupStep;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
+
+import java.util.Arrays;
+import java.util.function.Supplier;
 
 /**
  * Standalone application context, accepting <em>component classes</em> as input &mdash;
@@ -65,9 +65,27 @@ public class AnnotationConfigApplicationContext extends GenericApplicationContex
 	 * through {@link #register} calls and then manually {@linkplain #refresh refreshed}.
 	 */
 	public AnnotationConfigApplicationContext() {
+		/**
+		 * 1.调用父类GenericApplicationContext的构造方法实例化一个bean工厂DefaultListableBeanFactory
+		 * 2.调用父类初始化ASM 读取class的相关对象
+		 * 3.在IOC容器中初始化一个 注解bean读取器AnnotatedBeanDefinitionReader
+		 *   3.1初始化注解读取器的时候将spring的原生态的一些系统处理类放入工厂（DefaultListableBeanFactory）的一个map里面
+		 *   3.2 初始化的spring原生类是作为spring的默认后置处理器
+		 *     *  AnnotatedBeanDefinitionReader是可以将我们的一个普通类注册成一个BeanDefinition
+		 *     *  AnnotatedBeanDefinitionReader还将一些bean的后置处理器放入到bean后置处理器列表中
+		 */
 		StartupStep createAnnotatedBeanDefReader = this.getApplicationStartup().start("spring.context.annotated-bean-reader.create");
 		this.reader = new AnnotatedBeanDefinitionReader(this);
 		createAnnotatedBeanDefReader.end();
+		/**
+		 * 在IOC容器中初始化一个 按类路径扫描注解bean的 扫描器
+		 * 请注意，这里的扫描器是我们在外层给定一个包路径，它来扫描，
+		 * 如果我们仅仅是通过register()和refresh（）方法的话，是不会用到scanner来扫描的
+		 * 而spring底层在refresh容器的时候读取ComponentScan中包路径的时候扫描是通过自己构建一个新的
+		 * ClassPathBeanDefinitionScanner来扫描的
+		 * 所以ClassPathBeanDefinitionScanner是可以将我们的一个类路径下的所有的符合条件的普通类扫描成一个一个的BeanDefinition
+		 * 然后注册到BeanDefinitionMap中
+		 */
 		this.scanner = new ClassPathBeanDefinitionScanner(this);
 	}
 
@@ -165,6 +183,10 @@ public class AnnotationConfigApplicationContext extends GenericApplicationContex
 		Assert.notEmpty(componentClasses, "At least one component class must be specified");
 		StartupStep registerComponentClass = this.getApplicationStartup().start("spring.context.component-classes.register")
 				.tag("classes", () -> Arrays.toString(componentClasses));
+		/**
+		 * 这里开始注册我们的Bean,这个Bean是配置类的Bean，这个配置类的Bean
+		 * 是配置了告诉spring，我们需要扫那些包，而本身这个配置类的bean最终也会成为一个BeanDefinition
+		 */
 		this.reader.register(componentClasses);
 		registerComponentClass.end();
 	}

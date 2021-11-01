@@ -16,15 +16,11 @@
 
 package org.springframework.transaction.annotation;
 
-import java.lang.annotation.Documented;
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
-import java.lang.annotation.Target;
-
 import org.springframework.context.annotation.AdviceMode;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.Ordered;
+
+import java.lang.annotation.*;
 
 /**
  * Enables Spring's annotation-driven transaction management capability, similar to
@@ -159,6 +155,19 @@ import org.springframework.core.Ordered;
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 @Documented
+/**
+ * spring的事物管理的注解类，它也是使用spring自己提供的@Import方式导入了事物处理的相关类信息
+ * 看下面的@Import就知道导入的是一个selector，而selector类型的bean，spring会回调selectImports方法，然后将返回的
+ * 类信息列表作为一个BeanDefinition进行注册
+ * 在TransactionManagementConfigurationSelector中导入了两个BeanDefinition，
+ * 1.AutoProxyRegistrar aop的代理bean后置处理器的BeanDefinition；
+ * 2.ProxyTransactionManagementConfiguration事物管理的一个配置类，
+ * 主要处理向sprinng容器通过@Bean注册advisor类，注册advisor的时候是通过加了@Transactional注解的方法或者类生成一个advisor
+ * 然后第一步去做aop代理的时候就会扫描到业务类中加了@Transactional注解的类然后创建aop代理，其中我们都知道aop代理的advisor需要
+ * 两个条件：就是切点和代码逻辑,即pointcut和advice
+ * 所以第一步是aop去找到第二步向容器添加的advisor bean，而如果一个bean加了@Transactional,那么在找到的所有的advisor的时候
+ * 会去判断是否加了@Transactional，如果加了就会是一个advisor，作为代理对象的一个切入点
+ */
 @Import(TransactionManagementConfigurationSelector.class)
 public @interface EnableTransactionManagement {
 

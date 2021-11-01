@@ -16,17 +16,10 @@
 
 package org.springframework.context.annotation;
 
-import java.util.LinkedHashSet;
-import java.util.Set;
-
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.BeanDefinitionHolder;
-import org.springframework.beans.factory.support.AbstractBeanDefinition;
-import org.springframework.beans.factory.support.BeanDefinitionDefaults;
-import org.springframework.beans.factory.support.BeanDefinitionReaderUtils;
-import org.springframework.beans.factory.support.BeanDefinitionRegistry;
-import org.springframework.beans.factory.support.BeanNameGenerator;
+import org.springframework.beans.factory.support.*;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.EnvironmentCapable;
 import org.springframework.core.env.StandardEnvironment;
@@ -34,6 +27,9 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.PatternMatchUtils;
+
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 /**
  * A bean definition scanner that detects bean candidates on the classpath,
@@ -262,6 +258,7 @@ public class ClassPathBeanDefinitionScanner extends ClassPathScanningCandidateCo
 	}
 
 	/**
+	 * 这个方法是扫描的核心，spring的所有扫描都用的它来扫描的，spring是通过asm技术来进行扫描的
 	 * Perform a scan within the specified base packages,
 	 * returning the registered bean definitions.
 	 * <p>This method does <i>not</i> register an annotation config processor
@@ -271,24 +268,46 @@ public class ClassPathBeanDefinitionScanner extends ClassPathScanningCandidateCo
 	 */
 	protected Set<BeanDefinitionHolder> doScan(String... basePackages) {
 		Assert.notEmpty(basePackages, "At least one base package must be specified");
+		//这里的这个beanDefinitions是spring用来存放spring扫描到的bd，然后封装成一个BeanDefinitionHolder对象放入集合中
 		Set<BeanDefinitionHolder> beanDefinitions = new LinkedHashSet<>();
 		for (String basePackage : basePackages) {
+			//findCandidateComponents方法是进行扫描，根据basePackage扫描到所有符合条件的类封装成一个bd
 			Set<BeanDefinition> candidates = findCandidateComponents(basePackage);
 			for (BeanDefinition candidate : candidates) {
 				ScopeMetadata scopeMetadata = this.scopeMetadataResolver.resolveScopeMetadata(candidate);
 				candidate.setScope(scopeMetadata.getScopeName());
+				//根据BeanDefinition生成bean的名字也就是beanName
 				String beanName = this.beanNameGenerator.generateBeanName(candidate, this.registry);
+				/**
+				 * 在扫描的方法里面，findCandidateComponents，扫描到符合条件也就是加了@Component注解的类，然后也是符合过滤器的条件
+				 * 的类，是创建的ScannedGenericBeanDefinition，而这个bd是继承了GenericBeanDefinition和AnnotatedBeanDefinition，而GenericBeanDefinition
+				 * 又继承了AbstractBeanDefinition，所以下面的两个条件都是满足的，下面的两个条件都是满足的，第一个条件是设置了
+				 */
 				if (candidate instanceof AbstractBeanDefinition) {
+					//只有当我们扩展了Spring的时候，我们可以创建自定义的Bd，当我们扩展spring创建bd的时候，
+					//我们这个bd肯定不是注解的bd，可能是AbstractBeanDefinition bd或者GenericBeanDefinition
+					//所以下面这个方法主要为了给我们创建的bd或者spring内部自己的bd设置一些默认参数（但是这里肯定不是spring内部的bd，为什么？？
+					//因为我们定义的扫描包路径是不可能扫描到spring的内部的对象的，比如我们的包路径com.xxx.xxx,而且是必须加了@Component之类的注解
+					//才会被扫描到，所以这里的bd肯定是我们自己定义的bd，而且是实现了spring的扩展定义的并且加了
+					// @Component才能被扫描到并且注册到bdmap中）
+					//所以postProcessBeanDefinition这个方法的含义就是你（应用程序）告诉spring，我实现了你的一些方法，通过一些手段将我实现的
+					//类中产生了一些非注解的bd，你帮我把一些参数给我初始化一下，让我成为一个完整的bd，待后续使用（容器实例化）
 					postProcessBeanDefinition((AbstractBeanDefinition) candidate, beanName);
 				}
+				//下面这个判断就通常我们在应用程序中所设置了@Component，也就是注解bd，然后spring对它进行处理
 				if (candidate instanceof AnnotatedBeanDefinition) {
+					//也是设置一些参数，和上面postProcessBeanDefinition有点类似，但是这个不同在于我们是注解bd，所以
+					//下面这个方法就是根据我们 设置的注解是否有一些扩展参数，比如是否延迟加载，是否有一联@DepenOn等设置
 					AnnotationConfigUtils.processCommonDefinitionAnnotations((AnnotatedBeanDefinition) candidate);
 				}
+				//判断是否可以注册，就是简单判断这个bean是否已经注册
 				if (checkCandidate(beanName, candidate)) {
+					//首先封装bd到BeanDefinitionHolder，就是对bd的数据结构的封装
 					BeanDefinitionHolder definitionHolder = new BeanDefinitionHolder(candidate, beanName);
 					definitionHolder =
 							AnnotationConfigUtils.applyScopedProxyMode(scopeMetadata, definitionHolder, this.registry);
 					beanDefinitions.add(definitionHolder);
+					//注册扫描到的bd注册到bdmap中
 					registerBeanDefinition(definitionHolder, this.registry);
 				}
 			}
